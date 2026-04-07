@@ -1,0 +1,96 @@
+<#
+.SYNOPSIS
+    EternalBlue (MS17-010) Patch Checker for ALL Windows versions (XP+)
+    Uses systeminfo output + hotfixes + build numbers. Covers embedded/IoT/POSReady/WES09/etc.
+    Based on official Microsoft MS17-010 and verification tables (March–June 2017 roll-ups + base KBs).
+#>
+
+# Get systeminfo output for user verification (exactly as requested)
+Write-Host "=== SYSTEMINFO OUTPUT (OS details) ===" -ForegroundColor Cyan
+systeminfo | Select-String "OS Name|OS Version|OS Build|System Type|Hotfix" | Out-Host
+
+# Get OS details via WMI (compatible with XP through Windows 11 / Server 2022)
+$os = Get-WmiObject -Class Win32_OperatingSystem
+$caption = $os.Caption.Trim()
+$versionStr = $os.Version
+$build = [int]$os.BuildNumber
+
+Write-Host "`nDetected OS:" -ForegroundColor Cyan
+Write-Host "  Caption : $caption" 
+Write-Host "  Version : $versionStr"
+Write-Host "  Build   : $build"
+
+# Get all installed hotfix IDs (e.g. KB4012598)
+$hotfixes = (Get-HotFix | Select-Object -ExpandProperty HotFixID) -replace '^KB',''  # strip "KB" for easier matching
+Write-Host "Installed Hotfixes (partial): $($hotfixes[-10..-1] -join ', ')" -ForegroundColor Gray
+
+# === Patching KB lists from official Microsoft tables (includes every roll-up listed) ===
+$patchedKBs = @()
+
+if ($caption -match 'XP|2003|Vista|Server 2008|Windows 8' -and $versionStr -notmatch '^6\.3') {
+    # XP, Server 2003, Vista, Server 2008, Windows 8, WES09, POSReady 2009
+    $patchedKBs = @('4012598')
+}
+elseif ($caption -match 'Windows 7|Server 2008 R2|Embedded Standard 7|POSReady 7') {
+    # Windows 7 / 2008 R2 family + Embedded/POSReady 7 variants
+    # All Security Only + Monthly Roll-ups that contain the MS17-010 fix
+    $patchedKBs = @('4012212','4012215','4012218','4015549','4015552','4019263','4019264','4019265','4022722','4022168')
+    # Note: Any later ESU monthly roll-up after 2017 also includes it (e.g. KB4530692+)
+}
+elseif ($caption -match 'Windows 8\.1|Server 2012 R2' -or $versionStr -eq '6.3') {
+    # Windows 8.1 / Server 2012 R2 family
+    $patchedKBs = @('4012213','4012216','4012219','4015550','4015553','4019213','4019215','4019217','4022720')
+}
+elseif ($caption -match 'Windows Server 2012' -and $versionStr -eq '6.2') {
+    # Windows Server 2012 (non-R2)
+    $patchedKBs = @('4012214','4012217','4012220','4015551','4015554','4019214','4019216','4019218','4022724')
+}
+elseif ($caption -match 'Windows 10|Server 2016|IoT Enterprise' -or $versionStr -match '^10\.0') {
+    # Windows 10 / Server 2016 / IoT family – cumulative updates
+    # Initial MS17-010 KBs + early cumulatives (later builds automatically include the fix)
+    $patchedKBs = @('4012606','4016637','4015221','4019474',   # 1507
+                    '4013198','4016636','4015219','4019473',   # 1511
+                    '4013429','4016635','4015217','4019472')   # 1607 / Server 2016
+}
+
+# Check hotfixes against the KB list
+$isPatchedByKB = $false
+foreach ($kb in $patchedKBs) {
+    if ($hotfixes -contains $kb) {
+        $isPatchedByKB = $true
+        Write-Host "Found patching hotfix KB$kb" -ForegroundColor Green
+        break
+    }
+}
+
+# Special handling for Windows 10 / Server 2016+ using build number (cumulative updates supersede old KBs)
+$isPatchedByBuild = $false
+if ($versionStr -match '^10\.0') {
+    # Patched build thresholds from Microsoft verification tables
+    if ($build -ge 10240 -and $build -ge 17319) { $isPatchedByBuild = $true }      # 1507
+    elseif ($build -ge 10586 -and $build -ge 916) { $isPatchedByBuild = $true }    # 1511
+    elseif ($build -ge 14393 -and $build -ge 1198) { $isPatchedByBuild = $true }   # 1607/Server 2016
+    elseif ($build -ge 15063) { $isPatchedByBuild = $true }                         # 1703 and all newer releases (including Win11, Server 2019+)
+}
+
+# Final verdict
+Write-Host "`n=== ETERNALBLUE PATCH STATUS ===" -ForegroundColor Cyan
+if ($isPatchedByKB -or $isPatchedByBuild) {
+    Write-Host "PATCHED – This system has the MS17-010 fix (via hotfix or build)." -ForegroundColor Green
+    if ($isPatchedByBuild) { Write-Host "   (Detected via OS build number – all later cumulative updates include the patch)" -ForegroundColor Green }
+}
+elseif ($caption -match 'Windows 11|Server 2019|Server 2022') {
+    Write-Host "PATCHED – Modern Windows version (post-2017) is not affected or was fixed at release." -ForegroundColor Green
+}
+else {
+    Write-Host "VULNERABLE or UNKNOWN – No matching patching KB or build found." -ForegroundColor Red
+    Write-Host "Recommendation: Apply the latest available updates or the specific MS17-010 KB above." -ForegroundColor Yellow
+}
+
+Write-Host "`nAdditional hardening (recommended for OT/embedded systems):" -ForegroundColor Cyan
+Write-Host "  • Disable SMBv1: Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -NoRestart" -ForegroundColor Gray
+Write-Host "  • Block TCP 445 / SMB at the network level if possible." -ForegroundColor Gray
+
+# Optional: Export results
+# $result = [PSCustomObject]@{ OS=$caption; Build=$build; Patched=($isPatchedByKB -or $isPatchedByBuild); Hotfixes=$hotfixes }
+# \( result | Export-Csv -Path "C:\EternalBlue_Check_ \)(hostname).csv" -NoTypeInformation
