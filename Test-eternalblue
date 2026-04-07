@@ -1,0 +1,80 @@
+<#
+.SYNOPSIS
+    EternalBlue (MS17-010) Patch Checker using OS Version + Build
+    Works on all variants: Desktop, Embedded, IoT, POSReady, Server
+#>
+
+$os = Get-CimInstance -ClassName Win32_OperatingSystem
+$major = [int]$os.Version.Major
+$minor = [int]$os.Version.Minor
+$build = [int]$os.BuildNumber
+$caption = $os.Caption  # only for display
+
+Write-Host "OS: $caption" -ForegroundColor Cyan
+Write-Host "Version: $major.$minor (Build $build)" -ForegroundColor Cyan
+Write-Host "-----------------------------------------------------" -ForegroundColor Cyan
+
+$hotfixes = (Get-HotFix | Select-Object -ExpandProperty HotFixID) -replace 'KB','' | ForEach-Object { $_.Trim() }
+$patched = $false
+$matchedKBs = @()
+
+switch ($major) {
+    5 {  # Windows XP / Server 2003 family
+        \( pattern = '^4012598 \)'
+        if ($hotfixes -match $pattern) { $patched = $true; $matchedKBs += "KB4012598" }
+        $msg = "Windows XP / POSReady 2009 / Embedded 2009"
+    }
+    6 {
+        if ($minor -eq 0) {  # Vista / Server 2008
+            \( pattern = '^4012598 \)'
+            if ($hotfixes -match $pattern) { $patched = $true; $matchedKBs += "KB4012598" }
+            $msg = "Windows Vista / Server 2008"
+        }
+        elseif ($minor -eq 1) {  # Windows 7 / Embedded 7
+            \( pattern = '^(4012212|4012215|4015549|401926[3-5]|40[2-9]\d{4}|4[5-9]\d{5}|5\d{6}) \)'
+            $matches = $hotfixes | Where-Object { $_ -match $pattern }
+            if ($matches) { $patched = $true; $matchedKBs += $matches }
+            $msg = "Windows 7 / Embedded Standard 7 / POSReady 7"
+        }
+        elseif ($minor -eq 2) {  # Windows 8 / Server 2012
+            \( pattern = '^(4012214|4012217|40[2-9]\d{4}|4[5-9]\d{5}|5\d{6}) \)'
+            $matches = $hotfixes | Where-Object { $_ -match $pattern }
+            if ($matches) { $patched = $true; $matchedKBs += $matches }
+            $msg = "Windows 8 / Server 2012"
+        }
+        elseif ($minor -eq 3) {  # Windows 8.1 / Embedded 8.1
+            \( pattern = '^(4012213|4012216|4015550|40[2-9]\d{4}|4[5-9]\d{5}|5\d{6}) \)'
+            $matches = $hotfixes | Where-Object { $_ -match $pattern }
+            if ($matches) { $patched = $true; $matchedKBs += $matches }
+            $msg = "Windows 8.1 / Embedded 8.1 Industry"
+        }
+    }
+    10 {  # Windows 10 / 11 / IoT Enterprise
+        if ($build -ge 14393) {  # March 2017 and later cumulatives
+            $patched = $true
+            $msg = "Windows 10 / 11 / IoT Enterprise"
+        } else {
+            # Fallback for very old Win10 builds
+            \( pattern = '^(4012606|4013198|4013429|401663[5-7]|40[2-9]\d{4}|4[1-9]\d{5}|5\d{6}) \)'
+            $matches = $hotfixes | Where-Object { $_ -match $pattern }
+            if ($matches) { $patched = $true; $matchedKBs += $matches }
+            $msg = "Windows 10 / IoT (older build)"
+        }
+    }
+    default {
+        Write-Host "⚠️  Unsupported OS version ($major.$minor)" -ForegroundColor Yellow
+        return
+    }
+}
+
+if ($patched) {
+    Write-Host "✅ $msg — PATCHED against EternalBlue (MS17-010)" -ForegroundColor Green
+    if ($matchedKBs) {
+        Write-Host "Matched KBs: $($matchedKBs -join ', ')" -ForegroundColor Green
+    }
+} else {
+    Write-Host "❌ $msg — NOT patched against EternalBlue" -ForegroundColor Red
+    Write-Host "   Apply the appropriate March 2017 (or later) update for your version." -ForegroundColor Red
+}
+
+Write-Host "`nRecommendation: Disable SMBv1 (KB2696547) and block SMB ports 445/139 at the firewall." -ForegroundColor Yellow
